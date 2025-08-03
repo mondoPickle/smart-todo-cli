@@ -1,0 +1,126 @@
+#!/usr/bin/env python3
+import os
+import json
+import argparse
+from datetime import datetime
+from getpass import getpass
+from cryptography.fernet import Fernet
+
+DATA_FILE = os.path.expanduser("~/.smart_todo.enc")
+KEY_FILE = os.path.expanduser("~/.smart_todo.key")
+
+def generate_key(password: str) -> bytes:
+    # Simple key derivation from password (not for production, but good enough here)
+    return Fernet.generate_key()
+
+def load_key():
+    if os.path.exists(KEY_FILE):
+        with open(KEY_FILE, "rb") as f:
+            return f.read()
+    return None
+
+def save_key(key: bytes):
+    with open(KEY_FILE, "wb") as f:
+        f.write(key)
+
+def encrypt_data(key: bytes, data: str) -> bytes:
+    f = Fernet(key)
+    return f.encrypt(data.encode())
+
+def decrypt_data(key: bytes, token: bytes) -> str:
+    f = Fernet(key)
+    return f.decrypt(token).decode()
+
+def load_tasks(key: bytes):
+    if not os.path.exists(DATA_FILE):
+        return []
+    with open(DATA_FILE, "rb") as f:
+        encrypted = f.read()
+    try:
+        data = decrypt_data(key, encrypted)
+        return json.loads(data)
+    except Exception:
+        print("Failed to decrypt data. Maybe wrong key or corrupted file.")
+        return []
+
+def save_tasks(key: bytes, tasks):
+    data = json.dumps(tasks, indent=2)
+    encrypted = encrypt_data(key, data)
+    with open(DATA_FILE, "wb") as f:
+        f.write(encrypted)
+
+def add_task(tasks, description, priority, due_date, category):
+    task = {
+        "id": len(tasks) + 1,
+        "description": description,
+        "priority": priority,
+        "due_date": due_date,
+        "category": category,
+        "created_at": datetime.now().isoformat(),
+        "done": False
+    }
+    tasks.append(task)
+
+def list_tasks(tasks, show_all=False):
+    for t in tasks:
+        if not show_all and t["done"]:
+            continue
+        status = "✔️" if t["done"] else "❌"
+        due = t["due_date"] if t["due_date"] else "No due date"
+        print(f"[{t['id']}] {status} {t['description']} (Priority: {t['priority']}, Due: {due}, Category: {t['category']})")
+
+def mark_done(tasks, task_id):
+    for t in tasks:
+        if t["id"] == task_id:
+            t["done"] = True
+            return True
+    return False
+
+def main():
+    parser = argparse.ArgumentParser(description="Smart CLI To-Do List Manager (Encrypted Storage)")
+    parser.add_argument("command", choices=["add", "list", "done"], help="Command to execute")
+    parser.add_argument("--desc", help="Task description (for add)")
+    parser.add_argument("--priority", choices=["low", "medium", "high"], default="medium", help="Task priority")
+    parser.add_argument("--due", help="Due date in YYYY-MM-DD format")
+    parser.add_argument("--category", default="general", help="Task category")
+    parser.add_argument("--id", type=int, help="Task ID (for done)")
+    parser.add_argument("--all", action="store_true", help="Show all tasks including done")
+
+    args = parser.parse_args()
+
+    key = load_key()
+    if key is None:
+        print("No encryption key found. Creating a new key (will store locally).")
+        # In a real app, derive from password - simplified here
+        key = Fernet.generate_key()
+        save_key(key)
+
+    tasks = load_tasks(key)
+
+    if args.command == "add":
+        if not args.desc:
+            print("Please provide --desc to add a task.")
+            return
+        if args.due:
+            try:
+                datetime.strptime(args.due, "%Y-%m-%d")
+            except ValueError:
+                print("Due date format incorrect. Use YYYY-MM-DD.")
+                return
+        add_task(tasks, args.desc, args.priority, args.due, args.category)
+        save_tasks(key, tasks)
+        print("Task added.")
+    elif args.command == "list":
+        list_tasks(tasks, show_all=args.all)
+    elif args.command == "done":
+        if not args.id:
+            print("Please provide --id of task to mark done.")
+            return
+        if mark_done(tasks, args.id):
+            save_tasks(key, tasks)
+            print(f"Task {args.id} marked as done.")
+        else:
+            print(f"No task found with ID {args.id}.")
+
+if __name__ == "__main__":
+    main()
